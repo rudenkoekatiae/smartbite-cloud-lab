@@ -1,0 +1,41 @@
+# Локальний запуск: docker compose up --build
+# Піднімає API разом із PostgreSQL. Дані бази лежать в іменованому volume
+# db-data і переживають `docker compose down` (видаляються лише з `down -v`).
+
+name: smartbite
+
+services:
+  db:
+    image: postgres:17.5-bookworm
+    environment:
+      POSTGRES_DB: smartbite
+      POSTGRES_USER: smartbite
+      # Пароль лише для локальної розробки; можна перевизначити у файлі .env
+      # (він у .gitignore). У хмарі пароль генерує Terraform, сюди він не потрапляє.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-only}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartbite -d smartbite"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    # Порт бази назовні не публікується: до неї звертається тільки api
+    # через внутрішню мережу compose за іменем сервісу `db`.
+
+  api:
+    build:
+      context: ./smartbite_python_backend/smartbite_python_backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://smartbite:${POSTGRES_PASSWORD:-local-dev-only}@db:5432/smartbite
+      APP_VERSION: local
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy   # чекати, поки база реально приймає з'єднання
+    restart: unless-stopped
+
+volumes:
+  db-data:

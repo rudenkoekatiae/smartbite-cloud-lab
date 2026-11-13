@@ -1,0 +1,121 @@
+name: CI/CD
+
+# push у main → тести → збірка образу → публікація в ECR з тегом = хеш коміту
+# → нова ревізія task definition → оновлення сервісу ECS.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Одночасно виконується лише один деплой; наступний чекає в черзі.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  # Має збігатися з project_name у terraform/variables.tf: так називаються
+  # репозиторій ECR, кластер, сервіс і сімейство task definition.
+  PROJECT: smartbite
+  APP_DIR: smartbite_python_backend/smartbite_python_backend
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: pip install -r requirements.txt pytest
+
+      - name: Run unit tests
+        working-directory: ${{ env.APP_DIR }}
+        run: python -m pytest -q
+
+  deploy:
+    name: Build and deploy
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write # дозволяє запросити OIDC-токен у GitHub
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # Обмін OIDC-токена на тимчасові облікові дані ролі.
+      # Жодних access keys у GitHub Secrets немає; ARN ролі не є секретом.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          echo "IMAGE=${REGISTRY}/${PROJECT}:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build and push image (tag = commit SHA)
+        run: |
+          # Теги в ECR незмінні. Якщо образ цього коміту вже є (повторний запуск
+          # workflow), збирати і пушити його вдруге не потрібно.
+          if aws ecr describe-images --repository-name "$PROJECT" \
+               --image-ids imageTag="$GITHUB_SHA" > /dev/null 2>&1; then
+            echo "Image $IMAGE already exists, skipping build."
+          else
+            docker build --tag "$IMAGE" "$APP_DIR"
+            docker push "$IMAGE"
+          fi
+
+      - name: Register new task definition revision
+        run: |
+          # Беремо поточну ревізію, міняємо в ній лише образ і версію.
+          aws ecs describe-task-definition --task-definition "$PROJECT" \
+            --query taskDefinition > task-definition.json
+
+          jq --arg IMAGE "$IMAGE" --arg SHA "$GITHUB_SHA" '
+            .containerDefinitions[0].image = $IMAGE
+            | .containerDefinitions[0].environment =
+                ((.containerDefinitions[0].environment // [])
+                 | map(select(.name != "APP_VERSION"))
+                 | . + [{name: "APP_VERSION", value: $SHA}])
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+          ' task-definition.json > new-task-definition.json
+
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
+            --query taskDefinition.taskDefinitionArn --output text)
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> "$GITHUB_ENV"
+          echo "Registered $TASK_DEF_ARN"
+
+      - name: Update service and wait for rollout
+        run: |
+          aws ecs update-service --cluster "$PROJECT" --service "$PROJECT" \
+            --task-definition "$TASK_DEF_ARN" > /dev/null
+
+          # Чекаємо, поки нова задача пройде health check балансувальника,
+          # а стара буде зупинена.
+          aws ecs wait services-stable --cluster "$PROJECT" --services "$PROJECT"
+
+          # Якщо нова версія не стартувала, ECS відкотив сервіс на попередню —
+          # тоді деплой вважається невдалим.
+          CURRENT=$(aws ecs describe-services --cluster "$PROJECT" --services "$PROJECT" \
+            --query 'services[0].taskDefinition' --output text)
+          if [ "$CURRENT" != "$TASK_DEF_ARN" ]; then
+            echo "::error::Deployment was rolled back: service runs $CURRENT"
+            exit 1
+          fi
+          echo "Deployed $GITHUB_SHA"
