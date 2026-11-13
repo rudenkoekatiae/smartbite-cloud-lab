@@ -6,7 +6,7 @@ SmartBite — вебзастосунок для персонального пл�
 
 ## Публічна адреса
 
-**http://ЗАМІНИТИ-НА-АДРЕСУ-ALB** — значення `terraform output app_url` після розгортання.
+**http://smartbite-1338035087.eu-north-1.elb.amazonaws.com** — значення `terraform output app_url` після розгортання.
 
 | Що | Шлях |
 |---|---|
@@ -31,7 +31,7 @@ SmartBite — вебзастосунок для персонального пл�
               │    RDS PostgreSQL 17     │   приватні підмережі db
               └─────────────────────────┘   без маршруту в інтернет
 
-GitHub Actions ──OIDC──► IAM-роль ──► ECR (образ :<хеш коміту>) ──► ECS service
+GitHub Actions ──► IAM (мінімальні права) ──► ECR (образ :<хеш коміту>) ──► ECS service
 ```
 
 - **Реєстр образів** — приватний репозиторій ECR, теги незмінні (тег = хеш коміту).
@@ -39,7 +39,7 @@ GitHub Actions ──OIDC──► IAM-роль ──► ECR (образ :<хе
 - **Застосунок** — ECS Fargate у приватних підмережах. Єдиний відкритий порт — 8000, і лише для балансувальника.
 - **Балансувальник** — ALB, єдине, що видно з інтернету. Health check — `GET /health`.
 - **Секрети** — пароль бази генерує Terraform. Рядок підключення лежить у SSM Parameter Store (SecureString), ECS передає його контейнеру як змінну середовища `DATABASE_URL`. У коді, образі й репозиторії його немає.
-- **CI/CD** — GitHub Actions отримує тимчасові облікові дані через OIDC і роль з мінімальними правами. Ключів доступу в GitHub Secrets немає.
+- **CI/CD** — GitHub Actions має лише мінімальні права: запушити образ в один репозиторій ECR і оновити один сервіс ECS. Основний спосіб автентифікації — OIDC і роль; у поточному акаунті він недоступний, тому використано запасний (див. розділ «CI/CD»).
 
 ## REST API
 
@@ -82,7 +82,7 @@ GitHub Actions ──OIDC──► IAM-роль ──► ECR (образ :<хе
 │   ├── database.tf             # RDS, пароль, рядок підключення в SSM
 │   ├── alb.tf                  # балансувальник, target group, health check
 │   ├── ecs.tf                  # кластер, task definition, сервіс, execution role
-│   ├── github_oidc.tf          # OIDC provider і роль для GitHub Actions
+│   ├── github_oidc.tf          # доступ GitHub Actions: OIDC і роль або IAM-користувач для CI
 │   ├── outputs.tf
 │   └── terraform.tfvars.example
 ├── .github/workflows/deploy.yml  # CI/CD
@@ -118,9 +118,9 @@ curl http://localhost:8000/make-server-fd5d4174/plans
 
 ### 1. Акаунт AWS
 
-1. На root-акаунті ввімкнути MFA.
+1. На root-акаунті ввімкнути MFA. В акаунтах, створених через новий інтерфейс AWS із «проєктами», root-користувача немає — MFA вмикається на профілі (AWS Builder ID).
 2. Створити окремого IAM-користувача для роботи (політика `AdministratorAccess`, бо Terraform створює мережу, IAM-ролі, базу тощо) і далі працювати тільки від нього.
-3. Створити користувачу access key і налаштувати CLI: `aws configure` (регіон `eu-central-1`).
+3. Створити користувачу access key і налаштувати CLI: `aws configure`. Регіон — той, що дозволений в акаунті (у цьому проєкті `eu-north-1`).
 
 Перевірка: `aws sts get-caller-identity` показує IAM-користувача, а не root.
 
@@ -131,7 +131,7 @@ cd terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-У `terraform.tfvars` заповнити `budget_email` і `github_oidc_subject_prefix`. Префікс залежить від того, коли створено репозиторій на GitHub:
+У `terraform.tfvars` заповнити `budget_email`, `aws_region` і `github_oidc_subject_prefix`. Якщо акаунт не дозволяє створити OIDC-провайдер, додати `enable_github_oidc = false`. Префікс залежить від того, коли створено репозиторій на GitHub:
 
 ```bash
 # створено після 15.07.2026 — формат з числовими ID
@@ -149,8 +149,8 @@ gh api repos/OWNER/REPO --jq '"repo:\(.full_name)"'
 terraform init
 terraform validate
 
-# спершу бюджет зі сповіщенням
-terraform apply -target=aws_budgets_budget.monthly
+# спершу бюджет зі сповіщенням (лапки потрібні в PowerShell)
+terraform apply "-target=aws_budgets_budget.monthly"
 
 # потім усе інше (близько 10–15 хвилин, найдовше створюється база)
 terraform apply
@@ -158,14 +158,20 @@ terraform apply
 
 Після цього сервіс ECS уже існує, але образу в реєстрі ще немає — його збере і викладе перший запуск CI/CD.
 
-### 4. Змінні репозиторію GitHub
+### 4. Змінні й секрети репозиторію GitHub
 
-Workflow потрібні дві змінні (не секрети): Settings → Secrets and variables → Actions → Variables.
+Settings → Secrets and variables → Actions.
 
-```bash
-gh variable set AWS_ROLE_ARN --body "$(terraform output -raw github_actions_role_arn)"
-gh variable set AWS_REGION   --body "$(terraform output -raw aws_region)"
-```
+Завжди — змінна `AWS_REGION` (значення `terraform output -raw aws_region`).
+
+Варіант з OIDC (`enable_github_oidc = true`) — ще одна змінна, не секрет:
+
+- `AWS_ROLE_ARN` = `terraform output -raw github_actions_role_arn`.
+
+Запасний варіант (`enable_github_oidc = false`) — два секрети, а змінну `AWS_ROLE_ARN` не створювати:
+
+- `AWS_ACCESS_KEY_ID` = `terraform output -raw ci_access_key_id`;
+- `AWS_SECRET_ACCESS_KEY` = `terraform output -raw ci_secret_access_key`.
 
 ### 5. Перший деплой
 
@@ -196,7 +202,7 @@ curl $URL/make-server-fd5d4174/plans     # дані, прочитані з RDS
 
 1. **Tests** — юніт-тести алгоритму (`pytest`). Якщо тести не пройшли, деплою не буде.
 2. **Build and deploy**:
-   - отримує тимчасові облікові дані AWS через OIDC;
+   - автентифікується в AWS (OIDC і роль або, у запасному варіанті, ключ IAM-користувача для CI);
    - збирає образ і публікує в ECR з тегом, що дорівнює хешу коміту;
    - реєструє нову ревізію task definition з цим образом;
    - оновлює сервіс ECS і чекає, поки нова задача пройде health check балансувальника.
@@ -227,7 +233,8 @@ terraform destroy
 
 - **HTTP без HTTPS.** Для сертифіката потрібен власний домен.
 - **Один NAT-шлюз, один екземпляр застосунку, база в одній зоні без бекапів.** Це навчальний стенд; у `terraform/database.tf` і `variables.tf` вказано, що змінити для продакшену.
-- **Terraform state зберігається локально** і не комітиться (містить пароль бази).
+- **Terraform state зберігається локально** і не комітиться (містить пароль бази, а в запасному варіанті ще й ключ користувача для CI).
+- **Ключ доступу для CI замість OIDC** — вимушено, через обмеження акаунта (див. розділ «CI/CD»).
 
 ## Команда
 
