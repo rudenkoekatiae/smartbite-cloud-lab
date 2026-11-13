@@ -7,6 +7,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 resource "aws_iam_openid_connect_provider" "github" {
+  count = var.enable_github_oidc ? 1 : 0
+
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
 }
@@ -14,12 +16,14 @@ resource "aws_iam_openid_connect_provider" "github" {
 # Trust policy: ХТО може прийняти роль.
 # Тільки workflow з конкретного репозиторію і тільки з гілки main.
 data "aws_iam_policy_document" "github_actions_assume" {
+  count = var.enable_github_oidc ? 1 : 0
+
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
 
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [aws_iam_openid_connect_provider.github[0].arn]
     }
 
     condition {
@@ -37,8 +41,10 @@ data "aws_iam_policy_document" "github_actions_assume" {
 }
 
 resource "aws_iam_role" "github_actions" {
+  count = var.enable_github_oidc ? 1 : 0
+
   name                 = "${var.project_name}-github-actions"
-  assume_role_policy   = data.aws_iam_policy_document.github_actions_assume.json
+  assume_role_policy   = data.aws_iam_policy_document.github_actions_assume[0].json
   max_session_duration = 3600
 }
 
@@ -100,7 +106,40 @@ data "aws_iam_policy_document" "github_actions_deploy" {
 }
 
 resource "aws_iam_role_policy" "github_actions_deploy" {
+  count = var.enable_github_oidc ? 1 : 0
+
   name   = "deploy"
-  role   = aws_iam_role.github_actions.id
+  role   = aws_iam_role.github_actions[0].id
   policy = data.aws_iam_policy_document.github_actions_deploy.json
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Запасний варіант: enable_github_oidc = false.
+#
+# Акаунти AWS, створені через новий інтерфейс з «проєктами», мають службову
+# політику організації (SCP), яка забороняє iam:CreateOpenIDConnectProvider,
+# тож OIDC у них недоступний. Тоді для CI створюється окремий IAM-користувач
+# з тією самою мінімальною політикою деплою, а його ключ зберігається
+# в GitHub Secrets. Це гірше за OIDC (ключ довготривалий), тому права
+# обмежені так само суворо: один репозиторій ECR і один сервіс ECS.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "aws_iam_user" "github_actions" {
+  count = var.enable_github_oidc ? 0 : 1
+
+  name = "${var.project_name}-github-actions"
+}
+
+resource "aws_iam_user_policy" "github_actions_deploy" {
+  count = var.enable_github_oidc ? 0 : 1
+
+  name   = "deploy"
+  user   = aws_iam_user.github_actions[0].name
+  policy = data.aws_iam_policy_document.github_actions_deploy.json
+}
+
+resource "aws_iam_access_key" "github_actions" {
+  count = var.enable_github_oidc ? 0 : 1
+
+  user = aws_iam_user.github_actions[0].name
 }

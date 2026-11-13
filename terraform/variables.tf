@@ -30,6 +30,16 @@ variable "github_oidc_subject_prefix" {
   }
 }
 
+variable "enable_github_oidc" {
+  description = <<-EOT
+    true  — GitHub Actions отримує доступ через OIDC і роль (рекомендовано).
+    false — запасний варіант для акаунтів, де створення OIDC-провайдера
+            заборонене політикою організації: IAM-користувач для CI з ключем доступу.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "budget_email" {
   description = "Email для сповіщень AWS Budgets."
   type        = string

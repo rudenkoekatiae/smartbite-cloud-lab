@@ -4,8 +4,19 @@ output "app_url" {
 }
 
 output "github_actions_role_arn" {
-  description = "Значення для змінної репозиторію AWS_ROLE_ARN."
-  value       = aws_iam_role.github_actions.arn
+  description = "Значення для змінної репозиторію AWS_ROLE_ARN (лише коли enable_github_oidc = true)."
+  value       = one(aws_iam_role.github_actions[*].arn)
+}
+
+output "ci_access_key_id" {
+  description = "Значення для секрету репозиторію AWS_ACCESS_KEY_ID (лише коли enable_github_oidc = false)."
+  value       = one(aws_iam_access_key.github_actions[*].id)
+}
+
+output "ci_secret_access_key" {
+  description = "Значення для секрету репозиторію AWS_SECRET_ACCESS_KEY (лише коли enable_github_oidc = false)."
+  value       = one(aws_iam_access_key.github_actions[*].secret)
+  sensitive   = true
 }
 
 output "aws_region" {

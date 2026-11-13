@@ -52,12 +52,24 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Обмін OIDC-токена на тимчасові облікові дані ролі.
+      # Основний варіант: обмін OIDC-токена на тимчасові облікові дані ролі.
       # Жодних access keys у GitHub Secrets немає; ARN ролі не є секретом.
       - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.AWS_ROLE_ARN != '' }}
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Запасний варіант, коли змінна AWS_ROLE_ARN не задана: акаунт AWS не дозволяє
+      # створити OIDC-провайдер (заборона в політиці організації), тому використовується
+      # ключ окремого IAM-користувача з мінімальними правами (див. terraform/github_oidc.tf).
+      - name: Configure AWS credentials (access key fallback)
+        if: ${{ vars.AWS_ROLE_ARN == '' }}
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
