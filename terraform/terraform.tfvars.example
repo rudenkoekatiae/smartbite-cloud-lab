@@ -12,3 +12,7 @@ budget_email = "you@example.com"
 # Необов'язково:
 # aws_region         = "eu-central-1"
 # monthly_budget_usd = 10
+# alert_email              = "you@example.com"   # за замовчуванням = budget_email
+# autoscaling_max          = 3
+# cache_enabled            = true
+# enable_scheduled_scaling = false

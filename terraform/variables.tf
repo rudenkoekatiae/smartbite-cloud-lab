@@ -92,3 +92,58 @@ variable "db_backup_retention_days" {
   type        = number
   default     = 0
 }
+
+# ── Лабораторна 2: масштабування, моніторинг, кеш ──────────────────────────
+
+variable "autoscaling_min" {
+  description = "Мінімальна кількість задач сервісу."
+  type        = number
+  default     = 1
+}
+
+variable "autoscaling_max" {
+  description = "Максимальна кількість задач сервісу (за умовою лабораторної — не більше 4)."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.autoscaling_max >= 1 && var.autoscaling_max <= 4
+    error_message = "autoscaling_max: від 1 до 4."
+  }
+}
+
+variable "autoscaling_cpu_target" {
+  description = "Цільове середнє завантаження CPU (%) для target tracking."
+  type        = number
+  default     = 60
+}
+
+variable "enable_scheduled_scaling" {
+  description = "Бонус 8: мінімум 2 задачі вдень (08:00–22:00 Київ), 1 вночі."
+  type        = bool
+  default     = false
+}
+
+variable "alert_email" {
+  description = "Email для сповіщень CloudWatch. Порожньо — використовується budget_email."
+  type        = string
+  default     = null
+}
+
+variable "alert_cpu_threshold" {
+  description = "Поріг CPU (%) для тривоги."
+  type        = number
+  default     = 70
+}
+
+variable "cache_enabled" {
+  description = "Глобально вмикає кеш у застосунку (cache-aside для списку планів)."
+  type        = bool
+  default     = true
+}
+
+variable "cache_ttl_seconds" {
+  description = "Термін дії запису в кеші, секунди (30–60 за умовою)."
+  type        = number
+  default     = 30
+}

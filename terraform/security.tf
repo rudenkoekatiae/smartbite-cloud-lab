@@ -69,6 +69,43 @@ resource "aws_vpc_security_group_egress_rule" "app_https_out" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+resource "aws_vpc_security_group_egress_rule" "app_to_redis" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "Redis cache"
+  ip_protocol                  = "tcp"
+  from_port                    = 6379
+  to_port                      = 6379
+  referenced_security_group_id = aws_security_group.redis.id
+}
+
+# ── Redis: вхід тільки від застосунку; вихід лише HTTPS (pull образу, логи) ──
+
+resource "aws_security_group" "redis" {
+  name        = "${var.project_name}-redis"
+  description = "Redis cache (ECS task)"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-redis" }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "redis_from_app" {
+  security_group_id            = aws_security_group.redis.id
+  description                  = "Redis from the app security group only"
+  ip_protocol                  = "tcp"
+  from_port                    = 6379
+  to_port                      = 6379
+  referenced_security_group_id = aws_security_group.app.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "redis_https_out" {
+  security_group_id = aws_security_group.redis.id
+  description       = "HTTPS to ECR Public and CloudWatch Logs via NAT"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 # ── База: вхід тільки від security group застосунку, вихідних правил немає ───
 
 resource "aws_security_group" "db" {

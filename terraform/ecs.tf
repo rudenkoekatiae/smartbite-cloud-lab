@@ -4,6 +4,12 @@
 
 resource "aws_ecs_cluster" "main" {
   name = var.project_name
+
+  # Метрики RunningTaskCount / DesiredTaskCount (ECS/ContainerInsights) для панелі.
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
 }
 
 resource "aws_cloudwatch_log_group" "app" {
@@ -81,7 +87,11 @@ resource "aws_ecs_task_definition" "app" {
       ]
 
       environment = [
-        { name = "APP_VERSION", value = var.image_tag }
+        { name = "APP_VERSION", value = var.image_tag },
+        # Спільний для всіх екземплярів Redis (див. cache.tf), адреса — DNS-ім'я в Cloud Map.
+        { name = "REDIS_URL", value = "redis://${local.redis_host}:6379/0" },
+        { name = "CACHE_ENABLED", value = tostring(var.cache_enabled) },
+        { name = "CACHE_TTL_SECONDS", value = tostring(var.cache_ttl_seconds) },
       ]
 
       # Секрет не записаний у task definition: тут лише посилання (ARN).
@@ -138,8 +148,10 @@ resource "aws_ecs_service" "app" {
 
   # Нові ревізії task definition (з новим образом) реєструє CI/CD.
   # Без цього рядка наступний `terraform apply` відкотив би сервіс на першу ревізію.
+  # desired_count після створення змінює автоскейлер (autoscaling.tf) — інакше
+  # кожен `terraform apply` скидав би кількість екземплярів до var.desired_count.
   lifecycle {
-    ignore_changes = [task_definition]
+    ignore_changes = [task_definition, desired_count]
   }
 
   # Сервісу потрібні готовий listener (інакше target group не прив'язана до ALB),
