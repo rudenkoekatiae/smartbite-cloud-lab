@@ -55,6 +55,11 @@ export const options = {
   thresholds: {
     http_req_failed: ["rate<0.01"],
     "http_req_duration{op:read}": ["p(95)<1000"],
+    // Пороги, які завжди виконуються: лише щоб k6 показав ці підметрики в підсумку.
+    "http_req_duration{op:write}": ["p(95)<600000"],
+    "http_req_duration{name:GET /plans}": ["p(95)<600000"],
+    "http_req_duration{name:GET /plans/{id}}": ["p(95)<600000"],
+    cache_hit: ["rate>=0"],
   },
 };
 
