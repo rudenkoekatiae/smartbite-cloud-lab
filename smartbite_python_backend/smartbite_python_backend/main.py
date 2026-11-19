@@ -5,13 +5,14 @@ FastAPI backend with input validation.
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from typing import Optional
 
+import cache
 from database import MealPlan, get_session, init_db
 from meal_engine import calc_daily_calories, solve_week, INGREDIENT_GRAPH
 PREFIX = os.getenv("API_PREFIX", "/make-server-fd5d4174")
@@ -212,14 +213,56 @@ def generate_plan(body: PlanRequest, session: Session = Depends(get_session)):
 
 
 @app.get(f"{PREFIX}/plans")
-def list_plans(limit: int = 50, offset: int = 0, session: Session = Depends(get_session)):
-    """Список збережених планів (без повного вмісту), найновіші першими."""
+def list_plans(
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    session: Session = Depends(get_session),
+    x_cache_bypass: Optional[str] = Header(default=None),
+):
+    """Список збережених планів (без повного вмісту), найновіші першими.
+
+    Найнавантаженіша операція читання, тому — cache-aside:
+      1) шукаємо в Redis; є і TTL не сплив → повертаємо (X-Cache: HIT);
+      2) інакше читаємо з бази, кладемо в Redis на CACHE_TTL_SECONDS (X-Cache: MISS).
+    Заголовок `X-Cache-Bypass: 1` — прогін «без кешу» без передеплою (docs/CACHE.md).
+    """
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
+    use_cache = cache.CACHE_ENABLED and x_cache_bypass != "1"
+    key = f"plans:list:{limit}:{offset}"
+
+    if use_cache:
+        cached = cache.get_json(key)
+        if cached is not None:
+            cache.record("hit")
+            response.headers["X-Cache"] = "HIT"
+            return cached
+
     plans = session.scalars(
         select(MealPlan).order_by(MealPlan.id.desc()).limit(limit).offset(offset)
     ).all()
-    return {"plans": [_plan_summary(p) for p in plans]}
+    body = {"plans": [_plan_summary(p) for p in plans]}
+
+    if use_cache:
+        cache.set_json(key, body)
+        cache.record("miss")
+        response.headers["X-Cache"] = "MISS"
+    else:
+        response.headers["X-Cache"] = "BYPASS"
+    return body
+
+
+@app.get(f"{PREFIX}/cache/stats")
+def cache_stats():
+    """Частка влучань у кеш, спільна для всіх екземплярів."""
+    return cache.stats()
+
+
+@app.delete(f"{PREFIX}/cache/stats", status_code=204)
+def cache_stats_reset():
+    cache.reset_stats()
+    return Response(status_code=204)
 
 
 @app.get(f"{PREFIX}/plans/{{plan_id}}")

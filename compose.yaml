@@ -30,11 +30,21 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://smartbite:${POSTGRES_PASSWORD:-local-dev-only}@db:5432/smartbite
       APP_VERSION: local
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TTL_SECONDS: "30"
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy   # чекати, поки база реально приймає з'єднання
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # Кеш (cache-aside для списку планів). Без персистентності — це лише кеш.
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
     restart: unless-stopped
 
 volumes:
