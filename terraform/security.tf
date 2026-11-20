@@ -78,6 +78,43 @@ resource "aws_vpc_security_group_egress_rule" "app_to_redis" {
   referenced_security_group_id = aws_security_group.redis.id
 }
 
+# ── Обробник черги: вхідних правил немає; вихід — база і HTTPS (SQS, ECR, логи) ─
+
+resource "aws_security_group" "worker" {
+  name        = "${var.project_name}-worker"
+  description = "Queue worker (ECS tasks)"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-worker" }
+}
+
+resource "aws_vpc_security_group_egress_rule" "worker_to_db" {
+  security_group_id            = aws_security_group.worker.id
+  description                  = "PostgreSQL to the database"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.db.id
+}
+
+resource "aws_vpc_security_group_egress_rule" "worker_https_out" {
+  security_group_id = aws_security_group.worker.id
+  description       = "HTTPS to SQS, ECR, SSM, CloudWatch Logs via NAT"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_worker" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "PostgreSQL from the queue worker"
+  ip_protocol                  = "tcp"
+  from_port                    = 5432
+  to_port                      = 5432
+  referenced_security_group_id = aws_security_group.worker.id
+}
+
 # ── Redis: вхід тільки від застосунку; вихід лише HTTPS (pull образу, логи) ──
 
 resource "aws_security_group" "redis" {

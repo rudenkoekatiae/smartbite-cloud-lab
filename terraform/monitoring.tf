@@ -123,6 +123,57 @@ resource "aws_cloudwatch_dashboard" "main" {
           alarms = [aws_cloudwatch_metric_alarm.cpu_high.arn]
         }
       },
+      # ── Бонус 6: черга і обробник ──
+      # 8. Довжина черги — метрика, за якою масштабується обробник.
+      {
+        type = "metric", x = 0, y = 18, width = 8, height = 6
+        properties = {
+          title  = "Черга: повідомлень очікує / вік найстарішого, с"
+          region = var.aws_region
+          view   = "timeSeries"
+          period = 60
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.jobs.name, { stat = "Maximum", label = "Visible" }],
+            ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", aws_sqs_queue.jobs.name, { stat = "Maximum", label = "Age of oldest, s", yAxis = "right" }],
+          ]
+          yAxis = { left = { min = 0 } }
+          annotations = {
+            horizontal = [{ label = "ціль масштабування", value = var.worker_queue_target }]
+          }
+        }
+      },
+      # 9. Кількість обробників.
+      {
+        type = "metric", x = 8, y = 18, width = 8, height = 6
+        properties = {
+          title  = "Обробники: бажана і фактична кількість"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Maximum"
+          period = 60
+          metrics = [
+            ["ECS/ContainerInsights", "DesiredTaskCount", "ClusterName", aws_ecs_cluster.main.name, "ServiceName", aws_ecs_service.worker.name, { label = "Desired" }],
+            ["ECS/ContainerInsights", "RunningTaskCount", "ClusterName", aws_ecs_cluster.main.name, "ServiceName", aws_ecs_service.worker.name, { label = "Running" }],
+          ]
+          yAxis = { left = { min = 0, max = var.worker_max + 1 } }
+        }
+      },
+      # 10. Потік повідомлень: надіслано API / оброблено (видалено) обробником.
+      {
+        type = "metric", x = 16, y = 18, width = 8, height = 6
+        properties = {
+          title  = "Черга: надіслано / оброблено за хвилину"
+          region = var.aws_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 60
+          metrics = [
+            ["AWS/SQS", "NumberOfMessagesSent", "QueueName", aws_sqs_queue.jobs.name, { label = "Sent" }],
+            ["AWS/SQS", "NumberOfMessagesDeleted", "QueueName", aws_sqs_queue.jobs.name, { label = "Processed" }],
+          ]
+          yAxis = { left = { min = 0 } }
+        }
+      },
     ]
   })
 }

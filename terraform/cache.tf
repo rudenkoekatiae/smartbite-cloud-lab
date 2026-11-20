@@ -29,8 +29,6 @@ resource "aws_service_discovery_service" "redis" {
       ttl  = 10
     }
   }
-
-  health_check_custom_config {}
 }
 
 resource "aws_ecs_task_definition" "redis" {

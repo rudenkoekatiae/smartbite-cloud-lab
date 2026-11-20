@@ -66,6 +66,7 @@ resource "aws_ecs_task_definition" "app" {
   cpu                      = "256" # 0.25 vCPU
   memory                   = "512" # MiB
   execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.app_task.arn # право класти завдання в SQS (queue.tf)
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -92,6 +93,9 @@ resource "aws_ecs_task_definition" "app" {
         { name = "REDIS_URL", value = "redis://${local.redis_host}:6379/0" },
         { name = "CACHE_ENABLED", value = tostring(var.cache_enabled) },
         { name = "CACHE_TTL_SECONDS", value = tostring(var.cache_ttl_seconds) },
+        # Черга асинхронних завдань (queue.tf).
+        { name = "SQS_QUEUE_URL", value = aws_sqs_queue.jobs.url },
+        { name = "AWS_REGION", value = var.aws_region },
       ]
 
       # Секрет не записаний у task definition: тут лише посилання (ARN).

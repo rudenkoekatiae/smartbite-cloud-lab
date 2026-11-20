@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Код змінюється найчастіше, тому копіюється останнім.
-COPY main.py meal_engine.py database.py cache.py ingredient_graph.json ./
+COPY main.py meal_engine.py database.py cache.py idempotency.py jobs_queue.py worker.py ingredient_graph.json ./
 
 USER 1001:1001
 

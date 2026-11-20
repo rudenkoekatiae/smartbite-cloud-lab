@@ -3,7 +3,9 @@ SmartBite API v2
 FastAPI backend with input validation.
 """
 
+import json
 import os
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +15,9 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 import cache
-from database import MealPlan, get_session, init_db
+import idempotency
+import jobs_queue
+from database import MealPlan, PlanJob, get_session, init_db, make_meal_plan
 from meal_engine import calc_daily_calories, solve_week, INGREDIENT_GRAPH
 PREFIX = os.getenv("API_PREFIX", "/make-server-fd5d4174")
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
@@ -182,34 +186,82 @@ def _plan_summary(plan: MealPlan) -> dict:
 
 
 @app.post(f"{PREFIX}/generate-plan")
-def generate_plan(body: PlanRequest, session: Session = Depends(get_session)):
-    result = solve_week(
-        week_budget_uah=body.week_budget_uah,
-        daily_cal_target=body.daily_cal_target,
-        meals_per_day=body.meals_per_day,
-        skip_meal=body.skip_meal,
-        days=body.days,
-        cal_tolerance=body.cal_tolerance,
-        seed=body.seed,
-    )
+def generate_plan(
+    body: PlanRequest,
+    session: Session = Depends(get_session),
+    idempotency_key: Optional[str] = Header(default=None),
+):
+    """Синхронна генерація: клієнт чекає, поки план буде готовий (200).
 
-    if result.get("status") != "ok":
-        raise HTTPException(status_code=400, detail=result.get("reason", "Unknown error"))
+    Заголовок Idempotency-Key: повтор із тим самим ключем повертає збережену
+    відповідь і не створює другий план (idempotency.py, бонус 7).
+    """
+    params = body.model_dump()
 
-    # Кожен згенерований план зберігається в базі даних.
-    plan = MealPlan(
-        week_budget_uah=body.week_budget_uah,
-        daily_cal_target=body.daily_cal_target,
-        meals_per_day=body.meals_per_day,
-        days=body.days,
-        total_cost_uah=result["weekly_totals"]["cost_est"],
-        total_cal=result["weekly_totals"]["cal"],
-        result=result,
-    )
-    session.add(plan)
-    session.commit()
+    def action():
+        result = solve_week(**params)
+        if result.get("status") != "ok":
+            raise HTTPException(status_code=400, detail=result.get("reason", "Unknown error"))
+        # Кожен згенерований план зберігається в базі даних.
+        plan = make_meal_plan(params, result)
+        session.add(plan)
+        session.commit()
+        return 200, {**result, "plan_id": plan.id}
 
-    return {**result, "plan_id": plan.id}
+    return idempotency.run("generate-plan", idempotency_key, params, action)
+
+
+def _job_view(job: PlanJob) -> dict:
+    view = {
+        "job_id": job.id,
+        "status": job.status,
+        "status_url": f"{PREFIX}/plan-jobs/{job.id}",
+        "plan_id": job.plan_id,
+        "error": job.error,
+    }
+    if job.plan_id is not None:
+        view["plan_url"] = f"{PREFIX}/plans/{job.plan_id}"
+    return view
+
+
+@app.post(f"{PREFIX}/plan-jobs", status_code=202)
+def create_plan_job(
+    body: PlanRequest,
+    session: Session = Depends(get_session),
+    idempotency_key: Optional[str] = Header(default=None),
+):
+    """Асинхронна генерація (бонус 6): завдання в чергу SQS, відповідь одразу — 202.
+
+    Результат клієнт дізнається опитуванням GET /plan-jobs/{job_id}
+    (адреса — у заголовку Location і полі status_url).
+    """
+    if not jobs_queue.enabled():
+        raise HTTPException(status_code=503, detail="Job queue is not configured")
+    params = body.model_dump()
+
+    def action():
+        job = PlanJob(id=uuid.uuid4().hex, status="queued", params=params)
+        session.add(job)
+        session.commit()  # спершу запис у базі: обробник не отримає «невідоме» завдання
+        try:
+            jobs_queue.send(job.id)
+        except Exception as exc:
+            job.status, job.error = "failed", f"enqueue failed: {exc}"[:500]
+            session.commit()
+            raise HTTPException(status_code=503, detail="Could not enqueue the job")
+        return 202, _job_view(job)
+
+    response = idempotency.run("plan-jobs", idempotency_key, params, action)
+    response.headers["Location"] = json.loads(response.body)["status_url"]
+    return response
+
+
+@app.get(f"{PREFIX}/plan-jobs/{{job_id}}")
+def get_plan_job(job_id: str, session: Session = Depends(get_session)):
+    job = session.get(PlanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return _job_view(job)
 
 
 @app.get(f"{PREFIX}/plans")

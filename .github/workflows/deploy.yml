@@ -36,7 +36,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: ${{ env.APP_DIR }}
-        run: pip install -r requirements.txt pytest
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run unit tests
         working-directory: ${{ env.APP_DIR }}
@@ -91,42 +91,54 @@ jobs:
             docker push "$IMAGE"
           fi
 
-      - name: Register new task definition revision
+      # Один образ — два сервіси: API (uvicorn) і обробник черги (python worker.py).
+      # У кожного своє сімейство task definition з тим самим ім'ям, що й сервіс.
+      - name: Register new task definition revisions
         run: |
-          # Беремо поточну ревізію, міняємо в ній лише образ і версію.
-          aws ecs describe-task-definition --task-definition "$PROJECT" \
-            --query taskDefinition > task-definition.json
+          register() {
+            local FAMILY="$1"
+            # Беремо поточну ревізію, міняємо в ній лише образ і версію.
+            aws ecs describe-task-definition --task-definition "$FAMILY" \
+              --query taskDefinition > "td-$FAMILY.json"
 
-          jq --arg IMAGE "$IMAGE" --arg SHA "$GITHUB_SHA" '
-            .containerDefinitions[0].image = $IMAGE
-            | .containerDefinitions[0].environment =
-                ((.containerDefinitions[0].environment // [])
-                 | map(select(.name != "APP_VERSION"))
-                 | . + [{name: "APP_VERSION", value: $SHA}])
-            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                  .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
-          ' task-definition.json > new-task-definition.json
+            jq --arg IMAGE "$IMAGE" --arg SHA "$GITHUB_SHA" '
+              .containerDefinitions[0].image = $IMAGE
+              | .containerDefinitions[0].environment =
+                  ((.containerDefinitions[0].environment // [])
+                   | map(select(.name != "APP_VERSION"))
+                   | . + [{name: "APP_VERSION", value: $SHA}])
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+            ' "td-$FAMILY.json" > "new-td-$FAMILY.json"
 
-          TASK_DEF_ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new-task-definition.json \
-            --query taskDefinition.taskDefinitionArn --output text)
-          echo "TASK_DEF_ARN=$TASK_DEF_ARN" >> "$GITHUB_ENV"
-          echo "Registered $TASK_DEF_ARN"
+            aws ecs register-task-definition \
+              --cli-input-json "file://new-td-$FAMILY.json" \
+              --query taskDefinition.taskDefinitionArn --output text
+          }
 
-      - name: Update service and wait for rollout
+          APP_TD=$(register "$PROJECT")
+          WORKER_TD=$(register "$PROJECT-worker")
+          echo "APP_TD=$APP_TD" >> "$GITHUB_ENV"
+          echo "WORKER_TD=$WORKER_TD" >> "$GITHUB_ENV"
+          echo "Registered $APP_TD and $WORKER_TD"
+
+      - name: Update services and wait for rollout
         run: |
           aws ecs update-service --cluster "$PROJECT" --service "$PROJECT" \
-            --task-definition "$TASK_DEF_ARN" > /dev/null
+            --task-definition "$APP_TD" > /dev/null
+          aws ecs update-service --cluster "$PROJECT" --service "$PROJECT-worker" \
+            --task-definition "$WORKER_TD" > /dev/null
 
-          # Чекаємо, поки нова задача пройде health check балансувальника,
-          # а стара буде зупинена.
-          aws ecs wait services-stable --cluster "$PROJECT" --services "$PROJECT"
+          # Чекаємо, поки нові задачі запустяться (API — ще й пройде health check
+          # балансувальника), а старі будуть зупинені.
+          aws ecs wait services-stable --cluster "$PROJECT" \
+            --services "$PROJECT" "$PROJECT-worker"
 
           # Якщо нова версія не стартувала, ECS відкотив сервіс на попередню —
           # тоді деплой вважається невдалим.
           CURRENT=$(aws ecs describe-services --cluster "$PROJECT" --services "$PROJECT" \
             --query 'services[0].taskDefinition' --output text)
-          if [ "$CURRENT" != "$TASK_DEF_ARN" ]; then
+          if [ "$CURRENT" != "$APP_TD" ]; then
             echo "::error::Deployment was rolled back: service runs $CURRENT"
             exit 1
           fi

@@ -13,6 +13,7 @@
 //   BASE_URL   адреса сервісу (обов'язково)
 //   VUS        N — кількість користувачів на сталому навантаженні (за замовч. 8)
 //   CACHE      on | off — off додає заголовок X-Cache-Bypass: 1 (прогін «без кешу»)
+//   MODE       sync | async — async: запис через чергу POST /plan-jobs (бонус 6)
 //   THINK      пауза між діями користувача, с (за замовч. 1)
 //   RAMP_UP, STEADY, RAMP_DOWN — тривалість фаз (за замовч. 3m, 5m, 2m)
 
@@ -26,6 +27,7 @@ const PREFIX = __ENV.API_PREFIX || "/make-server-fd5d4174";
 const N = Number(__ENV.VUS || 8);
 const CACHE = (__ENV.CACHE || "on").toLowerCase();
 const THINK = Number(__ENV.THINK || 1);
+const MODE = (__ENV.MODE || "sync").toLowerCase(); // sync | async (бонус 6)
 
 if (!BASE_URL) {
   throw new Error("Задайте адресу: k6 run -e BASE_URL=http://... loadtest/smartbite.js");
@@ -97,23 +99,65 @@ function getIngredients() {
   check(res, { "ingredients 200": (r) => r.status === 200 });
 }
 
-function createPlan() {
-  const body = JSON.stringify({
+function planBody() {
+  return JSON.stringify({
     week_budget_uah: 1200 + Math.floor(Math.random() * 800), // 1200–2000 грн
     daily_cal_target: 1800 + Math.floor(Math.random() * 400), // 1800–2200 ккал
     meals_per_day: 3,
     days: 7,
   });
-  const res = http.post(`${API}/generate-plan`, body, {
-    headers: JSON_HEADERS,
+}
+
+// Унікальний ключ на кожен запис (бонус 7): так робив би реальний клієнт,
+// щоб безпечно повторювати запит після таймауту.
+function idemKey() {
+  return `k6-${__VU}-${__ITER}-${Date.now()}`;
+}
+
+// MODE=sync: POST /generate-plan — чекаємо готовий план (200).
+function createPlan() {
+  const res = http.post(`${API}/generate-plan`, planBody(), {
+    headers: { ...JSON_HEADERS, "Idempotency-Key": idemKey() },
     tags: { name: "POST /generate-plan", op: "write" },
   });
   check(res, { "create 200": (r) => r.status === 200 });
   try {
-    return res.json("plan_id");
+    return { planId: res.json("plan_id"), jobId: null };
   } catch (_) {
-    return null;
+    return { planId: null, jobId: null };
   }
+}
+
+// MODE=async (бонус 6): POST /plan-jobs — завдання в черзі, відповідь одразу (202).
+function createJob() {
+  const res = http.post(`${API}/plan-jobs`, planBody(), {
+    headers: { ...JSON_HEADERS, "Idempotency-Key": idemKey() },
+    tags: { name: "POST /plan-jobs", op: "write" },
+  });
+  check(res, { "job 202": (r) => r.status === 202 });
+  try {
+    return { planId: null, jobId: res.json("job_id") };
+  } catch (_) {
+    return { planId: null, jobId: null };
+  }
+}
+
+const jobDone = new Rate("job_done_when_checked");
+
+// Читання «щойно створеного»: у async-режимі спершу дізнаємось статус завдання.
+function getMine(mine) {
+  if (mine.planId) return getPlan(mine.planId);
+  if (!mine.jobId) return;
+  const res = http.get(`${API}/plan-jobs/${mine.jobId}`, {
+    tags: { name: "GET /plan-jobs/{id}", op: "read" },
+  });
+  check(res, { "job status 200": (r) => r.status === 200 });
+  let job = {};
+  try {
+    job = res.json();
+  } catch (_) {}
+  jobDone.add(job.status === "done");
+  if (job.status === "done" && job.plan_id) mine.planId = job.plan_id;
 }
 
 function randomId(plans, fallback) {
@@ -122,27 +166,27 @@ function randomId(plans, fallback) {
 
 export default function () {
   // 1 запис
-  const myId = createPlan();
+  const mine = MODE === "async" ? createJob() : createPlan();
   think();
 
   // 9 читань
   let plans = listPlans();
   think();
-  if (myId) getPlan(myId);
+  getMine(mine);
   think();
   getIngredients();
   think();
   plans = listPlans();
   think();
-  getPlan(randomId(plans, myId || 1));
+  getPlan(randomId(plans, mine.planId || 1));
   think();
   listPlans();
   think();
-  if (myId) getPlan(myId);
+  getMine(mine);
   think();
   plans = listPlans();
   think();
-  getPlan(randomId(plans, myId || 1));
+  getPlan(randomId(plans, mine.planId || 1));
   think();
 }
 
@@ -151,6 +195,6 @@ export function handleSummary(data) {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   return {
     stdout: textSummary(data, { indent: " ", enableColors: true }),
-    [`loadtest/results/summary-cache-${CACHE}-${stamp}.json`]: JSON.stringify(data, null, 2),
+    [`loadtest/results/summary-${MODE === "async" ? "async-" : ""}cache-${CACHE}-${stamp}.json`]: JSON.stringify(data, null, 2),
   };
 }

@@ -147,3 +147,28 @@ variable "cache_ttl_seconds" {
   type        = number
   default     = 30
 }
+
+# ── Бонус 6: черга і обробник ────────────────────────────────────────────────
+
+variable "worker_min" {
+  description = "Мінімальна кількість обробників черги."
+  type        = number
+  default     = 1
+}
+
+variable "worker_max" {
+  description = "Максимальна кількість обробників черги (не більше 4)."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.worker_max >= 1 && var.worker_max <= 4
+    error_message = "worker_max: від 1 до 4."
+  }
+}
+
+variable "worker_queue_target" {
+  description = "Цільова кількість видимих повідомлень у черзі для target tracking обробника."
+  type        = number
+  default     = 5
+}

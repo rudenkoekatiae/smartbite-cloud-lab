@@ -24,6 +24,8 @@ REDIS_URL = os.getenv("REDIS_URL")
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true" and bool(REDIS_URL)
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "30"))
 
+# Клієнт є завжди, коли задано REDIS_URL: ним користуються і кеш, і ідемпотентність
+# (idempotency.py). CACHE_ENABLED вимикає лише кешування списку планів.
 _client: Optional[redis.Redis] = (
     redis.Redis.from_url(
         REDIS_URL,
@@ -31,9 +33,13 @@ _client: Optional[redis.Redis] = (
         socket_connect_timeout=0.2,
         decode_responses=True,
     )
-    if CACHE_ENABLED
+    if REDIS_URL
     else None
 )
+
+
+def client() -> Optional[redis.Redis]:
+    return _client
 
 
 def get_json(key: str) -> Optional[Any]:
@@ -69,7 +75,7 @@ def record(outcome: str) -> None:
 
 
 def stats() -> dict:
-    if _client is None:
+    if _client is None or not CACHE_ENABLED:
         return {"enabled": False}
     try:
         hits = int(_client.get("stats:hit") or 0)

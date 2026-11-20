@@ -87,15 +87,19 @@ data "aws_iam_policy_document" "github_actions_deploy" {
       "ecs:DescribeServices",
       "ecs:UpdateService",
     ]
-    resources = [aws_ecs_service.app.id] # id сервісу — це його ARN
+    resources = [aws_ecs_service.app.id, aws_ecs_service.worker.id] # id сервісу — це його ARN
   }
 
   # Реєструючи task definition, CI «передає» ECS роль запуску. Дозволено передати
   # тільки цю одну роль і тільки сервісу ECS.
   statement {
-    sid       = "PassExecutionRoleToEcs"
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.ecs_execution.arn]
+    sid     = "PassExecutionRoleToEcs"
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.ecs_execution.arn,
+      aws_iam_role.app_task.arn,
+      aws_iam_role.worker_task.arn,
+    ]
 
     condition {
       test     = "StringEquals"

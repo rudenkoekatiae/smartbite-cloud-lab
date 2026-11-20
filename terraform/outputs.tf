@@ -55,3 +55,8 @@ output "dashboard_url" {
 output "alerts_topic_arn" {
   value = aws_sns_topic.alerts.arn
 }
+
+output "jobs_queue_url" {
+  description = "Черга асинхронних завдань (SQS)."
+  value       = aws_sqs_queue.jobs.url
+}
