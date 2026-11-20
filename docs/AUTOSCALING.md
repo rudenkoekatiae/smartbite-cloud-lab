@@ -84,10 +84,16 @@ CloudWatch → Dashboards → `smartbite` (`terraform output dashboard_url`). Г
 
 ## Прогін: знімки панелі
 
-> Знімки зробити під час прогону `k6 run -e BASE_URL=... -e VUS=8 loadtest/smartbite.js`
-> і покласти в `docs/img/`. На знімку позначити (стрілки/підписи) чотири моменти.
+Панель 23:10–23:40. Зліва видно кінець прогону 1: друга задача вже працює,
+автоскейлер додає третю (C). CPU падає до нуля, коли навантаження закінчується,
+а задачі вилучаються лише через 15 і 19 хв (D). Справа — початок прогону 2:
+старт (A) і перетин порогу CPU (B).
 
-![Панель під час прогону](img/dashboard-run.png)
+![Панель: масштабування і вилучення задач](img/dashboard-run.png)
+
+Панель за всю добу 19.11 — обидва прогони, ~23:04 і ~23:37:
+
+![Панель за добу](img/dashboard-day.png)
 
 Прогін 1 (19.11.2026, без кешу, N = 8), час AWS (UTC+2), дані з CloudWatch і
 `aws application-autoscaling describe-scaling-activities`:
@@ -104,8 +110,6 @@ CloudWatch → Dashboards → `smartbite` (`terraform output dashboard_url`). Г
 →3 о 23:46:45.
 
 **Між B і C реально минає ~5.5 хв, між кінцем навантаження і D — 15 хв.**
-
-![Кількість екземплярів після спаду](img/dashboard-scale-in.png)
 
 ### Чому між B і C минає час
 

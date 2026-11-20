@@ -33,12 +33,14 @@ Terraform: [terraform/monitoring.tf](../terraform/monitoring.tf): `aws_cloudwatc
 
 ## Листи
 
-> Знімки покласти в `docs/img/`.
+Лист ALARM. Вгорі згорнутий лист прогону 1 (23:11), нижче розгорнутий лист прогону 2
+(23:43:39): CPU 96 % і 78 % у 2 точках поспіль, вище за поріг 70 %.
 
-| | Знімок | Отримано о |
-|---|---|---|
-| ALARM | ![Лист ALARM](img/alert-alarm.png) | 23:11:39 (перехід OK → ALARM) |
-| OK | ![Лист OK](img/alert-ok.png) | 23:15:39 (перехід ALARM → OK) |
+![Лист ALARM](img/alert-alarm.png)
+
+Лист OK. Тривога переходить в OK і надсилає такий самий лист через `ok_actions`.
+
+![Лист OK](img/alert-ok.png)
 
 Історія стану (`aws cloudwatch describe-alarm-history --alarm-name smartbite-cpu-high`):
 
